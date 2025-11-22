@@ -228,7 +228,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             cfg_dropout_prob = 0.1,
             timestep_sampler: tp.Literal["uniform", "logit_normal", "trunc_logit_normal", "log_snr"] = "uniform",
             timestep_sampler_options: tp.Optional[tp.Dict[str, tp.Any]] = None,
-            validation_timesteps = [0.1, 0.3, 0.5, 0.7, 0.9],
+            num_val_timesteps = 1,
             p_one_shot: float = 0.0,
             inpainting_config: dict = None
     ):
@@ -308,12 +308,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             self.inpaint_mask_kwargs = self.inpainting_config.get("mask_kwargs", {})
 
         # Validation
-        self.validation_timesteps = validation_timesteps
+        self.num_val_timesteps = num_val_timesteps
 
         self.validation_step_outputs = {}
-
-        for validation_timestep in self.validation_timesteps:
-            self.validation_step_outputs[f'val/loss_{validation_timestep:.1f}'] = []
 
     def configure_optimizers(self):
         diffusion_opt_config = self.optimizer_configs['diffusion']
@@ -497,8 +494,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         if reals.ndim == 4 and reals.shape[0] == 1:
             reals = reals[0]
 
-        loss_info = {}
-
         diffusion_input = reals
 
         with torch.cuda.amp.autocast() and torch.no_grad():
@@ -530,9 +525,12 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 if hasattr(self.diffusion.pretransform, "scale") and self.diffusion.pretransform.scale != 1.0:
                     diffusion_input = diffusion_input / self.diffusion.pretransform.scale
 
-        for validation_timestep in self.validation_timesteps:
+        batch_size = diffusion_input.shape[0]
 
-            t = torch.full((reals.shape[0],), validation_timestep, device=self.device)
+        losses = []
+
+        for _ in range(self.num_val_timesteps):
+            t = torch.rand(batch_size, device=self.device)
 
             # Calculate the noise schedule parameters for those timesteps
             if self.diffusion_objective in ["v"]:
@@ -561,30 +559,33 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
                 val_loss = F.mse_loss(output, targets)
 
-                self.validation_step_outputs[f'val/loss_{validation_timestep:.1f}'].append(val_loss.item())
+                losses.append(val_loss)
+
+        # Average over the K random timesteps for this batch
+        batch_val_loss = torch.stack(losses).mean()
+
+        # Store on CPU to aggregate later
+        self.validation_step_outputs.append(batch_val_loss.detach().cpu())
 
     def on_validation_epoch_end(self):
-        log_dict = {}
-        for validation_timestep in self.validation_timesteps:
-            outputs_key = f'val/loss_{validation_timestep:.1f}'
-            val_loss = sum(self.validation_step_outputs[outputs_key]) / len(self.validation_step_outputs[outputs_key])
+        if not self.validation_step_outputs:
+            return
 
-            # Gather losses across all GPUs
-            val_loss = self.all_gather(val_loss).mean().item()
+        # Mean over all validation batches on this rank
+        val_loss_tensor = torch.stack(
+            [torch.as_tensor(x, device=self.device) for x in self.validation_step_outputs]
+        ).mean()
 
-            log_metric(self.logger, outputs_key, val_loss, step=self.global_step)
+        # All-gather across GPUs and average
+        val_loss_gathered = self.all_gather(val_loss_tensor).mean().item()
 
-        # Get average over all timesteps
-        val_loss = torch.tensor([val for val in self.validation_step_outputs.values()]).mean()
+        log_metric(self.logger, "val/loss", val_loss_gathered, step=self.global_step)
 
-        # Gather losses across all GPUs
-        val_loss = self.all_gather(val_loss).mean().item()
+        # # Optionally keep a separate averaged metric name like the old 'val/avg_loss'
+        # log_metric(self.logger, "val/avg_loss", val_loss_gathered, step=self.global_step)
 
-        log_metric(self.logger, 'val/avg_loss', val_loss, step=self.global_step)
-
-        # Reset validation losses
-        for validation_timestep in self.validation_timesteps:
-            self.validation_step_outputs[f'val/loss_{validation_timestep:.1f}'] = []
+        # Reset
+        self.validation_step_outputs = []
 
 
     def export_model(self, path, use_safetensors=False):
