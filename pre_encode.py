@@ -97,8 +97,9 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
         for i, latent in enumerate(latents):
             latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
 
-            # Save latent as numpy file
-            latent_path = self.output_path / str(self.global_rank) / f"{latent_id}.npy"
+            latent_path = (self.output_path / Path(metadata['relpath']).stem).with_suffix(".npy") \
+                if metadata and 'relpath' in metadata \
+                else self.output_path / str(self.global_rank) / f"{latent_id}.npy"
             with open(latent_path, "wb") as f:
                 np.save(f, latent)
 
@@ -116,7 +117,9 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
                     md[k] = v.cpu().numpy().tolist()
 
             # Save metadata to json file
-            metadata_path = self.output_path / str(self.global_rank) / f"{latent_id}.json"
+            metadata_path = (self.output_path / Path(metadata['relpath']).stem).with_suffix(".npy") \
+                if metadata and 'relpath' in metadata \
+                else self.output_path / str(self.global_rank) / f"{latent_id}.json"
             with open(metadata_path, "w") as f:
                 json.dump(md, f)
 
