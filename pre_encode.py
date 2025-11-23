@@ -13,18 +13,6 @@ from stable_audio_tools.models.factory import create_model_from_config
 from stable_audio_tools.models.pretrained import get_pretrained_model
 from stable_audio_tools.models.utils import load_ckpt_state_dict, copy_state_dict
 
-def check_filename_length(filename):
-    try:
-        # Get max name length for the current directory/filesystem
-        if len(filename) > 255:
-            print(f"Error: Filename is too long ({len(filename)} chars, max is {max_len})")
-        else:
-            print(f"Filename is within the limit ({len(filename)} chars, max is {max_len})")
-    except OSError as e:
-        print(f"Could not determine max filename length: {e}")
-
-# Example usage
-check_filename_length("my_test_file.txt")
 
 def load_model(model_config=None, model_ckpt_path=None, pretrained_name=None, model_half=False):
     if pretrained_name is not None:
