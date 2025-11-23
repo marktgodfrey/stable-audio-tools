@@ -13,6 +13,18 @@ from stable_audio_tools.models.factory import create_model_from_config
 from stable_audio_tools.models.pretrained import get_pretrained_model
 from stable_audio_tools.models.utils import load_ckpt_state_dict, copy_state_dict
 
+def check_filename_length(filename):
+    try:
+        # Get max name length for the current directory/filesystem
+        if len(filename) > 255:
+            print(f"Error: Filename is too long ({len(filename)} chars, max is {max_len})")
+        else:
+            print(f"Filename is within the limit ({len(filename)} chars, max is {max_len})")
+    except OSError as e:
+        print(f"Could not determine max filename length: {e}")
+
+# Example usage
+check_filename_length("my_test_file.txt")
 
 def load_model(model_config=None, model_ckpt_path=None, pretrained_name=None, model_half=False):
     if pretrained_name is not None:
@@ -96,11 +108,13 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
 
         # Save each sample in the batch
         for i, latent in enumerate(latents):
-            latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
-
             md = metadata[i]
 
-            latent_path = (self.output_path / Path(md['relpath']).stem).with_suffix(".npy") \
+            latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
+            basename = self.output_path / Path(md['relpath']).stem
+            basename = basename[:240]
+
+            latent_path = basename.with_suffix(".npy") \
                 if md and 'relpath' in md \
                 else self.output_path / str(self.global_rank) / f"{latent_id}.npy"
             with open(latent_path, "wb") as f:
@@ -119,7 +133,7 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
                     md[k] = v.cpu().numpy().tolist()
 
             # Save metadata to json file
-            metadata_path = (self.output_path / Path(md['relpath']).stem).with_suffix(".json") \
+            metadata_path = basename.with_suffix(".json") \
                 if md and 'relpath' in md \
                 else self.output_path / str(self.global_rank) / f"{latent_id}.json"
             with open(metadata_path, "w") as f:
