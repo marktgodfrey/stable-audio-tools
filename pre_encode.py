@@ -100,7 +100,7 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
 
             latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
             basename = self.output_path / Path(md['relpath']).stem
-            basename = basename[:240]
+            basename = Path(str(basename)[:240])
 
             latent_path = basename.with_suffix(".npy") \
                 if md and 'relpath' in md \
