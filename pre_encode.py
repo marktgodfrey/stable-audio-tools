@@ -68,8 +68,9 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
 
     def setup(self, stage=None):
         # runs on each device
-        process_dir = self.output_path / str(self.global_rank)
-        process_dir.mkdir(parents=True, exist_ok=True)
+        # process_dir = self.output_path / str(self.global_rank)
+        # process_dir.mkdir(parents=True, exist_ok=True)
+        self.output_path.mkdir(parents=True, exist_ok=True)
 
     def validation_step(self, batch, batch_idx):
         audio, metadata = batch
@@ -118,7 +119,7 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
                     md[k] = v.cpu().numpy().tolist()
 
             # Save metadata to json file
-            metadata_path = (self.output_path / Path(md['relpath']).stem).with_suffix(".npy") \
+            metadata_path = (self.output_path / Path(md['relpath']).stem).with_suffix(".json") \
                 if md and 'relpath' in md \
                 else self.output_path / str(self.global_rank) / f"{latent_id}.json"
             with open(metadata_path, "w") as f:
