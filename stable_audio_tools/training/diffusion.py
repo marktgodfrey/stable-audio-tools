@@ -310,7 +310,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         # Validation
         self.num_val_timesteps = num_val_timesteps
 
-        self.validation_step_outputs = {}
+        self.validation_step_outputs = []
 
     def configure_optimizers(self):
         diffusion_opt_config = self.optimizer_configs['diffusion']
