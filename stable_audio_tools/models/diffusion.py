@@ -566,7 +566,7 @@ class DiTUncondWrapper(DiffusionModel):
 
         self.model = DiffusionTransformer(*args, **kwargs)
 
-        self.io_channels = args.io_channels
+        # self.io_channels = args.io_channels
 
         with torch.no_grad():
             for param in self.model.parameters():
@@ -604,13 +604,13 @@ def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
     if diffusion_model_type == 'DAU1d':
 
         model = DiffusionAttnUnet1D(
-            **diffusion_config
+            **diffusion_model_config
         )
     
     elif diffusion_model_type == "adp_uncond_1d":
 
         model = UNet1DUncondWrapper(
-            **diffusion_config
+            **diffusion_model_config
         )
 
     elif diffusion_model_type == "dit":
