@@ -68,6 +68,7 @@ def main():
     model = create_model_from_config(model_config)
 
     if args.pretrained_ckpt_path:
+        print("Loading checkpoint from {}".format(args.pretrained_ckpt_path))
         copy_state_dict(model, load_ckpt_state_dict(args.pretrained_ckpt_path))
 
     if args.remove_pretransform_weight_norm == "pre_load":
