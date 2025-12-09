@@ -57,8 +57,8 @@ def create_training_wrapper_from_config(model_config, model):
     elif model_type == 'diffusion_uncond':
         from .diffusion import DiffusionUncondTrainingWrapper
         return DiffusionUncondTrainingWrapper(
-            model, 
-            lr=training_config["learning_rate"],
+            model,
+            optimizer_configs=training_config.get("optimizer_configs", None),
             pre_encoded=training_config.get("pre_encoded", False),
         )
     elif model_type in ['diffusion_cond', 'diffusion_cond_inpaint']:
