@@ -579,9 +579,9 @@ class DiTUncondWrapper(DiffusionModel):
 def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
     diffusion_uncond_config = config["model"]
 
-    model_type = diffusion_uncond_config.get('type', None)
-
     diffusion_config = diffusion_uncond_config.get('config', {})
+
+    model_type = diffusion_config.get('type', None)
 
     assert model_type is not None, "Must specify model type in config"
 
