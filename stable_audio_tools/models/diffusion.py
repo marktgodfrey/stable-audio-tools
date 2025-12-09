@@ -566,7 +566,7 @@ class DiTUncondWrapper(DiffusionModel):
 
         self.model = DiffusionTransformer(*args, **kwargs)
 
-        self.io_channels = io_channels
+        self.io_channels = args.io_channels
 
         with torch.no_grad():
             for param in self.model.parameters():
@@ -615,7 +615,7 @@ def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
 
     elif diffusion_model_type == "dit":
         model = DiTUncondWrapper(
-            **diffusion_config
+            **diffusion_model_config
         )
 
     else:
