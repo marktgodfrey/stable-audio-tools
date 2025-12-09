@@ -559,15 +559,15 @@ class DiTWrapper(ConditionedDiffusionModel):
 class DiTUncondWrapper(DiffusionModel):
     def __init__(
         self,
-        in_channels,
+        io_channels,
         *args,
         **kwargs
     ):
         super().__init__()
 
-        self.model = DiffusionTransformer(io_channels=in_channels, *args, **kwargs)
+        self.model = DiffusionTransformer(io_channels=io_channels, *args, **kwargs)
 
-        self.io_channels = in_channels
+        self.io_channels = io_channels
 
         with torch.no_grad():
             for param in self.model.parameters():
