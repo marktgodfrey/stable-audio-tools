@@ -559,13 +559,12 @@ class DiTWrapper(ConditionedDiffusionModel):
 class DiTUncondWrapper(DiffusionModel):
     def __init__(
         self,
-        io_channels,
         *args,
         **kwargs
     ):
         super().__init__()
 
-        self.model = DiffusionTransformer(io_channels=io_channels, *args, **kwargs)
+        self.model = DiffusionTransformer(*args, **kwargs)
 
         self.io_channels = io_channels
 
