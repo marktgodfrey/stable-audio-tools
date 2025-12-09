@@ -595,6 +595,9 @@ def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
     sample_rate = config.get("sample_rate", None)
     assert sample_rate is not None, "Must specify sample rate in config"
 
+    io_channels = diffusion_model_config.get("io_channels", None)
+    assert io_channels is not None, "Must specify io_channels in config"
+
     if pretransform is not None:
         pretransform = create_pretransform_from_config(pretransform, sample_rate)
         min_input_length = pretransform.downsampling_ratio
@@ -622,7 +625,7 @@ def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
         raise NotImplementedError(f'Unknown model type: {diffusion_model_type}')
 
     return DiffusionModelWrapper(model,
-                                io_channels=model.io_channels,
+                                io_channels=io_channels,
                                 sample_size=sample_size,
                                 sample_rate=sample_rate,
                                 pretransform=pretransform,
