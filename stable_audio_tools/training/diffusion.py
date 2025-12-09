@@ -48,20 +48,26 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
     def __init__(
             self,
             model: DiffusionModelWrapper,
-            lr: float = 1e-4,
+            lr: float = None,
+            use_ema: bool = True,
+            optimizer_configs: dict = None,
             pre_encoded: bool = False
     ):
         super().__init__()
 
         self.diffusion = model
 
-        self.diffusion_ema = EMA(
-            self.diffusion.model,
-            beta=0.9999,
-            power=3/4,
-            update_every=1,
-            update_after_step=1
-        )
+        if use_ema:
+            self.diffusion_ema = EMA(
+                self.diffusion.model,
+                beta=0.9999,
+                power=3/4,
+                update_every=1,
+                update_after_step=1,
+                include_online_model=False
+            )
+        else:
+            self.diffusion_ema = None
 
         self.lr = lr
 
@@ -79,8 +85,39 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
 
         self.pre_encoded = pre_encoded
 
+        assert lr is not None or optimizer_configs is not None, "Must specify either lr or optimizer_configs in training config"
+
+        if optimizer_configs is None:
+            optimizer_configs = {
+                "diffusion": {
+                    "optimizer": {
+                        "type": "Adam",
+                        "config": {
+                            "lr": lr
+                        }
+                    }
+                }
+            }
+        else:
+            if lr is not None:
+                print(f"WARNING: learning_rate and optimizer_configs both specified in config. Ignoring learning_rate and using optimizer_configs.")
+
+        self.optimizer_configs = optimizer_configs
+
     def configure_optimizers(self):
-        return optim.Adam([*self.diffusion.parameters()], lr=self.lr)
+        diffusion_opt_config = self.optimizer_configs['diffusion']
+        opt_diff = create_optimizer_from_config(diffusion_opt_config['optimizer'], self.diffusion.parameters())
+
+        if "scheduler" in diffusion_opt_config:
+            sched_diff = create_scheduler_from_config(diffusion_opt_config['scheduler'], opt_diff)
+            sched_diff_config = {
+                "scheduler": sched_diff,
+                "interval": "step"
+            }
+            return [opt_diff], [sched_diff_config]
+
+        return [opt_diff]
+
 
     def training_step(self, batch, batch_idx):
         reals = batch[0]
@@ -132,6 +169,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
         log_dict = {
             'train/loss': loss.detach(),
             'train/std_data': diffusion_input.std(),
+            'train/lr': self.trainer.optimizers[0].param_groups[0]['lr']
         }
 
         for loss_name, loss_value in losses.items():
