@@ -577,15 +577,18 @@ class DiTUncondWrapper(DiffusionModel):
         return self.model(x, t, **kwargs)
 
 def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
-    diffusion_uncond_config = config["model"]
+    model_config = config["model"]
 
-    diffusion_config = diffusion_uncond_config.get('config', {})
+    diffusion_config = model_config.get('diffusion', None)
+    assert diffusion_config is not None, "Must specify diffusion config"
 
-    model_type = diffusion_config.get('type', None)
+    diffusion_model_type = diffusion_config.get('type', None)
+    assert diffusion_model_type is not None, "Must specify diffusion model type"
 
-    assert model_type is not None, "Must specify model type in config"
+    diffusion_model_config = diffusion_config.get('config', None)
+    assert diffusion_model_config is not None, "Must specify diffusion model config"
 
-    pretransform = diffusion_uncond_config.get("pretransform", None)
+    pretransform = model_config.get("pretransform", None)
 
     sample_size = config.get("sample_size", None)
     assert sample_size is not None, "Must specify sample size in config"
@@ -599,25 +602,25 @@ def create_diffusion_uncond_from_config(config: tp.Dict[str, tp.Any]):
     else:
         min_input_length = 1
 
-    if model_type == 'DAU1d':
+    if diffusion_model_type == 'DAU1d':
 
         model = DiffusionAttnUnet1D(
             **diffusion_config
         )
     
-    elif model_type == "adp_uncond_1d":
+    elif diffusion_model_type == "adp_uncond_1d":
 
         model = UNet1DUncondWrapper(
             **diffusion_config
         )
 
-    elif model_type == "dit":
+    elif diffusion_model_type == "dit":
         model = DiTUncondWrapper(
             **diffusion_config
         )
 
     else:
-        raise NotImplementedError(f'Unknown model type: {model_type}')
+        raise NotImplementedError(f'Unknown model type: {diffusion_model_type}')
 
     return DiffusionModelWrapper(model,
                                 io_channels=model.io_channels,
