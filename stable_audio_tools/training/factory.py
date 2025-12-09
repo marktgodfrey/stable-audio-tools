@@ -190,7 +190,8 @@ def create_demo_callback_from_config(model_config, **kwargs):
         return DiffusionUncondDemoCallback(
             demo_every=demo_config.get("demo_every", 2000), 
             demo_steps=demo_config.get("demo_steps", 250), 
-            sample_rate=model_config["sample_rate"]
+            sample_rate=model_config["sample_rate"],
+            num_demos=demo_config["num_demos"],
         )
     elif model_type == "diffusion_autoencoder":
         from .diffusion import DiffusionAutoencoderDemoCallback
