@@ -51,7 +51,8 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             lr: float = None,
             use_ema: bool = True,
             optimizer_configs: dict = None,
-            pre_encoded: bool = False
+            pre_encoded: bool = False,
+            num_val_timesteps = 1
     ):
         super().__init__()
 
@@ -103,6 +104,11 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
                 print(f"WARNING: learning_rate and optimizer_configs both specified in config. Ignoring learning_rate and using optimizer_configs.")
 
         self.optimizer_configs = optimizer_configs
+
+        # Validation
+        self.num_val_timesteps = num_val_timesteps
+
+        self.validation_step_outputs = []
 
     def configure_optimizers(self):
         diffusion_opt_config = self.optimizer_configs['diffusion']
@@ -179,16 +185,115 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
         return loss
 
     def on_before_zero_grad(self, *args, **kwargs):
-        self.diffusion_ema.update()
+        if self.diffusion_ema is not None:
+            self.diffusion_ema.update()
 
     def export_model(self, path, use_safetensors=False):
 
-        self.diffusion.model = self.diffusion_ema.ema_model
+        if self.diffusion_ema is not None:
+            self.diffusion.model = self.diffusion_ema.ema_model
 
         if use_safetensors:
             save_file(self.diffusion.state_dict(), path)
         else:
             torch.save({"state_dict": self.diffusion.state_dict()}, path)
+
+    def validation_step(self, batch, batch_idx):
+
+        reals, metadata = batch
+
+        if reals.ndim == 4 and reals.shape[0] == 1:
+            reals = reals[0]
+
+        diffusion_input = reals
+
+        # TODO: decide what to do with padding masks during validation
+
+        # # If mask_padding is on, randomly drop the padding masks to allow for learning silence padding
+        # use_padding_mask = self.mask_padding and random.random() > self.mask_padding_dropout
+
+        # # Create batch tensor of attention masks from the "mask" field of the metadata array
+        # if use_padding_mask:
+        #     padding_masks = torch.stack([md["padding_mask"][0] for md in metadata], dim=0).to(self.device) # Shape (batch_size, sequence_length)
+
+        if self.diffusion.pretransform is not None:
+            self.diffusion.pretransform.to(self.device)
+
+            if not self.pre_encoded:
+                with torch.cuda.amp.autocast() and torch.no_grad():
+                    self.diffusion.pretransform.train(self.diffusion.pretransform.enable_grad)
+
+                    diffusion_input = self.diffusion.pretransform.encode(diffusion_input)
+
+                    # # If mask_padding is on, interpolate the padding masks to the size of the pretransformed input
+                    # if use_padding_mask:
+                    #     padding_masks = F.interpolate(padding_masks.unsqueeze(1).float(), size=diffusion_input.shape[2], mode="nearest").squeeze(1).bool()
+            else:
+                # Apply scale to pre-encoded latents if needed, as the pretransform encode function will not be run
+                if hasattr(self.diffusion.pretransform, "scale") and self.diffusion.pretransform.scale != 1.0:
+                    diffusion_input = diffusion_input / self.diffusion.pretransform.scale
+
+        batch_size = diffusion_input.shape[0]
+
+        losses = []
+
+        for _ in range(self.num_val_timesteps):
+            t = torch.rand(batch_size, device=self.device)
+
+            # Calculate the noise schedule parameters for those timesteps
+            if self.diffusion_objective in ["v"]:
+                alphas, sigmas = get_alphas_sigmas(t)
+            elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+                alphas, sigmas = 1-t, t
+
+            # Combine the ground truth data and the noise
+            alphas = alphas[:, None, None]
+            sigmas = sigmas[:, None, None]
+            noise = torch.randn_like(diffusion_input)
+            noised_inputs = diffusion_input * alphas + noise * sigmas
+
+            if self.diffusion_objective == "v":
+                targets = noise * alphas - diffusion_input * sigmas
+            elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+                targets = noise - diffusion_input
+
+            extra_args = {}
+
+            # if use_padding_mask:
+            #     extra_args["mask"] = padding_masks
+
+            with torch.cuda.amp.autocast() and torch.no_grad():
+                output = self.diffusion(noised_inputs, t, **extra_args)
+
+                val_loss = F.mse_loss(output, targets)
+
+                losses.append(val_loss)
+
+        # Average over the K random timesteps for this batch
+        batch_val_loss = torch.stack(losses).mean()
+
+        # Store on CPU to aggregate later
+        self.validation_step_outputs.append(batch_val_loss.detach().cpu())
+
+    def on_validation_epoch_end(self):
+        if not self.validation_step_outputs:
+            return
+
+        # Mean over all validation batches on this rank
+        val_loss_tensor = torch.stack(
+            [torch.as_tensor(x, device=self.device) for x in self.validation_step_outputs]
+        ).mean()
+
+        # All-gather across GPUs and average
+        val_loss_gathered = self.all_gather(val_loss_tensor).mean().item()
+
+        log_metric(self.logger, "val/loss", val_loss_gathered, step=self.global_step)
+
+        # # Optionally keep a separate averaged metric name like the old 'val/avg_loss'
+        # log_metric(self.logger, "val/avg_loss", val_loss_gathered, step=self.global_step)
+
+        # Reset
+        self.validation_step_outputs = []
 
 class DiffusionUncondDemoCallback(pl.Callback):
     def __init__(self,
