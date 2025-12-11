@@ -241,10 +241,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             t = torch.rand(batch_size, device=self.device)
 
             # Calculate the noise schedule parameters for those timesteps
-            if self.diffusion_objective in ["v"]:
-                alphas, sigmas = get_alphas_sigmas(t)
-            elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-                alphas, sigmas = 1-t, t
+            alphas, sigmas = get_alphas_sigmas(t)
 
             # Combine the ground truth data and the noise
             alphas = alphas[:, None, None]
