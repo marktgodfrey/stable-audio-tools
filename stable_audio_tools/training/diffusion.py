@@ -249,10 +249,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             noise = torch.randn_like(diffusion_input)
             noised_inputs = diffusion_input * alphas + noise * sigmas
 
-            if self.diffusion_objective == "v":
-                targets = noise * alphas - diffusion_input * sigmas
-            elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-                targets = noise - diffusion_input
+            targets = noise * alphas - diffusion_input * sigmas
 
             extra_args = {}
 
