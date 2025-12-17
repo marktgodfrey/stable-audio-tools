@@ -52,6 +52,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             use_ema: bool = True,
             optimizer_configs: dict = None,
             pre_encoded: bool = False,
+            log_loss_info: bool = False,
             num_val_timesteps = 1
     ):
         super().__init__()
@@ -85,6 +86,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
         self.losses = MultiLoss(loss_modules)
 
         self.pre_encoded = pre_encoded
+        self.log_loss_info = log_loss_info
 
         assert lr is not None or optimizer_configs is not None, "Must specify either lr or optimizer_configs in training config"
 
@@ -171,6 +173,28 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             })
 
             loss, losses = self.losses(loss_info)
+
+        if self.log_loss_info:
+            # Loss debugging logs
+            num_loss_buckets = 10
+            bucket_size = 1 / num_loss_buckets
+            loss_all = F.mse_loss(output, targets, reduction="none")
+
+            sigmas = rearrange(self.all_gather(sigmas), "w b c n -> (w b) c n").squeeze()
+
+            # gather loss_all across all GPUs
+            loss_all = rearrange(self.all_gather(loss_all), "w b c n -> (w b) c n")
+
+            # Bucket loss values based on corresponding sigma values, bucketing sigma values by bucket_size
+            loss_all = torch.stack([loss_all[(sigmas >= i) & (sigmas < i + bucket_size)].mean() for i in torch.arange(0, 1, bucket_size).to(self.device)])
+
+            # Log bucketed losses with corresponding sigma bucket values, if it's not NaN
+            debug_log_dict = {
+                f"model/loss_all_{i/num_loss_buckets:.1f}": loss_all[i].detach() for i in range(num_loss_buckets) if not torch.isnan(loss_all[i])
+            }
+
+            self.log_dict(debug_log_dict)
+
 
         log_dict = {
             'train/loss': loss.detach(),
