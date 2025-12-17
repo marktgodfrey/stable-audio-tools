@@ -60,6 +60,7 @@ def create_training_wrapper_from_config(model_config, model):
             model,
             optimizer_configs=training_config.get("optimizer_configs", None),
             pre_encoded=training_config.get("pre_encoded", False),
+            log_loss_info=training_config.get("log_loss_info", False)
         )
     elif model_type in ['diffusion_cond', 'diffusion_cond_inpaint']:
        
