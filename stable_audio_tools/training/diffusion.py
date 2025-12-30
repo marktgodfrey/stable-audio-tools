@@ -126,6 +126,29 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
 
         return [opt_diff]
 
+    def on_train_epoch_start(self) -> None:
+        def n(p):
+            return sum(x.numel() for x in p)
+
+        def n_trainable(module):
+            return sum(x.numel() for x in module.parameters() if x.requires_grad)
+
+        print("diffusion total:", n(self.diffusion.parameters()))
+        print("diffusion trainable:", n_trainable(self.diffusion))
+
+        print("ema total:", n(self.diffusion_ema.parameters()))
+        print("ema trainable:", n_trainable(self.diffusion_ema))
+
+        # optimizer coverage: are diffusion params actually in the optimizer?
+        opt_params = set()
+        for g in self.trainer.optimizers[0].param_groups:
+            for p in g["params"]:
+                opt_params.add(id(p))
+
+        diff_trainable = [p for p in self.diffusion.parameters() if p.requires_grad]
+        covered = sum(1 for p in diff_trainable if id(p) in opt_params)
+        print("diffusion trainable params covered by optimizer:", covered, "/", len(diff_trainable))
+
 
     def training_step(self, batch, batch_idx):
         reals = batch[0]
