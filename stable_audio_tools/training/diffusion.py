@@ -178,7 +178,7 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
             # Loss debugging logs
             num_loss_buckets = 10
             bucket_size = 1 / num_loss_buckets
-            loss_all = F.mse_loss(output, targets, reduction="none")
+            loss_all = F.mse_loss(v, targets, reduction="none")
 
             sigmas = rearrange(self.all_gather(sigmas), "w b c n -> (w b) c n").squeeze()
 
