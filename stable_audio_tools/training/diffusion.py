@@ -126,45 +126,45 @@ class DiffusionUncondTrainingWrapper(pl.LightningModule):
 
         return [opt_diff]
 
-    def on_train_epoch_start(self) -> None:
-        def n(p):
-            return sum(x.numel() for x in p)
-
-        def n_trainable(module):
-            return sum(x.numel() for x in module.parameters() if x.requires_grad)
-
-        print("diffusion total:", n(self.diffusion.parameters()))
-        print("diffusion trainable:", n_trainable(self.diffusion))
-
-        print("ema total:", n(self.diffusion_ema.parameters()))
-        print("ema trainable:", n_trainable(self.diffusion_ema))
-
-        # optimizer coverage: are diffusion params actually in the optimizer?
-        # opt_params = set()
-        # for g in self.trainer.optimizers[0].param_groups:
-        #     for p in g["params"]:
-        #         opt_params.add(id(p))
-        #
-        # diff_trainable = [p for p in self.diffusion.parameters() if p.requires_grad]
-        # covered = sum(1 for p in diff_trainable if id(p) in opt_params)
-        # print("diffusion trainable params covered by optimizer:", covered, "/", len(diff_trainable))
-        opt_param_ids = {
-            id(p)
-            for g in self.trainer.optimizers[0].param_groups
-            for p in g["params"]
-            if p is not None
-        }
-
-        trainable_named = [(n, p) for n, p in self.diffusion.named_parameters() if p.requires_grad]
-        trainable_tensors = len(trainable_named)
-        trainable_numel = sum(p.numel() for _, p in trainable_named)
-
-        covered_named = [(n, p) for n, p in trainable_named if id(p) in opt_param_ids]
-        covered_tensors = len(covered_named)
-        covered_numel = sum(p.numel() for _, p in covered_named)
-
-        print(f"[coverage:tensors] {covered_tensors}/{trainable_tensors}")
-        print(f"[coverage:numel]   {covered_numel}/{trainable_numel} ({covered_numel / trainable_numel:.6%})")
+    # def on_train_epoch_start(self) -> None:
+    #     def n(p):
+    #         return sum(x.numel() for x in p)
+    #
+    #     def n_trainable(module):
+    #         return sum(x.numel() for x in module.parameters() if x.requires_grad)
+    #
+    #     print("diffusion total:", n(self.diffusion.parameters()))
+    #     print("diffusion trainable:", n_trainable(self.diffusion))
+    #
+    #     print("ema total:", n(self.diffusion_ema.parameters()))
+    #     print("ema trainable:", n_trainable(self.diffusion_ema))
+    #
+    #     # optimizer coverage: are diffusion params actually in the optimizer?
+    #     # opt_params = set()
+    #     # for g in self.trainer.optimizers[0].param_groups:
+    #     #     for p in g["params"]:
+    #     #         opt_params.add(id(p))
+    #     #
+    #     # diff_trainable = [p for p in self.diffusion.parameters() if p.requires_grad]
+    #     # covered = sum(1 for p in diff_trainable if id(p) in opt_params)
+    #     # print("diffusion trainable params covered by optimizer:", covered, "/", len(diff_trainable))
+    #     opt_param_ids = {
+    #         id(p)
+    #         for g in self.trainer.optimizers[0].param_groups
+    #         for p in g["params"]
+    #         if p is not None
+    #     }
+    #
+    #     trainable_named = [(n, p) for n, p in self.diffusion.named_parameters() if p.requires_grad]
+    #     trainable_tensors = len(trainable_named)
+    #     trainable_numel = sum(p.numel() for _, p in trainable_named)
+    #
+    #     covered_named = [(n, p) for n, p in trainable_named if id(p) in opt_param_ids]
+    #     covered_tensors = len(covered_named)
+    #     covered_numel = sum(p.numel() for _, p in covered_named)
+    #
+    #     print(f"[coverage:tensors] {covered_tensors}/{trainable_tensors}")
+    #     print(f"[coverage:numel]   {covered_numel}/{trainable_numel} ({covered_numel / trainable_numel:.6%})")
 
         if covered_tensors != trainable_tensors:
             uncovered = [(n, p) for n, p in trainable_named if id(p) not in opt_param_ids]
