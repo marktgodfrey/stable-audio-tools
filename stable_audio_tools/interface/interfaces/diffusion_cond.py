@@ -177,7 +177,7 @@ def generate_cond(
             if model.pretransform is not None:
                 denoised = model.pretransform.decode(denoised)
             denoised = rearrange(denoised, "b d n -> d (b n)")
-            denoised = denoised.clamp(-1, 1).mul(32767).to(torch.int16).cpu()
+            denoised = denoised.clamp(-1, 1).cpu()
             audio_spectrogram = audio_spectrogram_image(denoised, sample_rate=sample_rate)
             preview_images.append((audio_spectrogram, f"Step {current_step} sigma={sigma:.3f} logSNR={log_snr:.3f}"))
 
@@ -253,7 +253,7 @@ def generate_cond(
 
     # Encode the audio to WAV format
     audio = rearrange(audio, "b d n -> d (b n)")
-    audio = audio.to(torch.float32).div(torch.max(torch.abs(audio))).clamp(-1, 1).mul(32767).to(torch.int16).cpu()
+    audio = audio.to(torch.float32).div(torch.max(torch.abs(audio))).clamp(-1, 1).cpu()
 
     # save as wav file
     torchaudio.save(output_wav, audio, sample_rate)
