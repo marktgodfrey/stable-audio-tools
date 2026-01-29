@@ -246,7 +246,7 @@ class AudioLanguageModelDemoCallback(pl.Callback):
 
                 filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
                 fakes = fakes / fakes.abs().max()
-                fakes = fakes.type(torch.float32).clamp(-1, 1).mul(32767).type(torch.int16).cpu()
+                fakes = fakes.type(torch.float32).clamp(-1, 1).cpu()
                 torchaudio.save(filename, fakes, self.sample_rate)
 
                 log_audio(
