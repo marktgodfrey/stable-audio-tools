@@ -57,7 +57,7 @@ def main():
 
         val_dl = create_dataloader_from_config(
             val_dataset_config,
-            batch_size=args.batch_size,
+            batch_size=args.batch_size if args.batch_size_val is None else args.batch_size_val,
             num_workers=args.num_workers,
             sample_rate=model_config["sample_rate"],
             sample_size=model_config["sample_size"],
