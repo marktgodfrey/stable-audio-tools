@@ -11,6 +11,7 @@ import time
 import torch
 import torchaudio
 import webdataset as wds
+import math
 
 from os import path
 from torch import nn
@@ -94,7 +95,7 @@ def keyword_scandir(
 def get_audio_filenames(
     paths: list,  # directories in which to search
     keywords=None,
-    exts=['.wav', '.mp3', '.flac', '.ogg', '.aif', '.opus']
+    exts=['.wav', '.mp3', '.flac', '.ogg', '.aif', '.opus', '.webm']
 ):
     "recursively get a list of audio filenames"
     filenames = []
@@ -161,7 +162,10 @@ class SampleDataset(torch.utils.data.Dataset):
 
         self.root_paths = []
 
-        self.pad_crop = PadCrop_Normalized_T(sample_size, sample_rate, randomize=random_crop)
+        if random_crop:
+            self.pad_crop = PadCrop_Normalized_T(sample_size, sample_rate, randomize=random_crop)
+        else:
+            self.pad_crop = None
 
         self.force_channels = force_channels
 
@@ -202,7 +206,15 @@ class SampleDataset(torch.utils.data.Dataset):
             start_time = time.time()
             audio = self.load_file(audio_filename)
 
-            audio, t_start, t_end, seconds_start, seconds_total, padding_mask = self.pad_crop(audio)
+            if self.pad_crop:
+                audio, t_start, t_end, seconds_start, seconds_total, padding_mask = self.pad_crop(audio)
+            else:
+                n_channels, n_samples = audio.shape
+                t_start = 0.
+                t_end = 1.
+                seconds_start = 0.
+                seconds_total = math.ceil(n_samples / self.sample_rate)
+                padding_mask = torch.ones([n_samples])
 
             # Check for silence
             if is_silence(audio):
@@ -249,7 +261,8 @@ class SampleDataset(torch.utils.data.Dataset):
                 if "__audio__" in info:
                     for audio_key, audio_value in info["__audio__"].items():
                         # Process the audio_value tensor, which should be a torch tensor
-                        audio_value, _, _, _, _, _ = self.pad_crop(audio_value)
+                        if self.pad_crop:
+                            audio_value, _, _, _, _, _ = self.pad_crop(audio_value)
                         audio_value = audio_value.clamp(-1, 1)
                         if self.encoding is not None:
                             audio_value = self.encoding(audio_value)

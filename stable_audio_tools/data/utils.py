@@ -31,7 +31,7 @@ class PadCrop_Normalized_T(nn.Module):
         self.sample_rate = sample_rate
         self.randomize = randomize
 
-    def __call__(self, source: torch.Tensor) -> Tuple[torch.Tensor, float, float, int, int]:
+    def __call__(self, source: torch.Tensor) -> Tuple[torch.Tensor, float, float, int, int, torch.Tensor]:
         
         n_channels, n_samples = source.shape
         
