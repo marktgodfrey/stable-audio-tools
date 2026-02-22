@@ -213,7 +213,7 @@ class SampleDataset(torch.utils.data.Dataset):
                 t_start = 0.
                 t_end = 1.
                 seconds_start = 0.
-                seconds_total = math.ceil(n_samples / self.sample_rate)
+                seconds_total = math.ceil(n_samples / self.sr)
                 padding_mask = torch.ones([n_samples])
 
             # Check for silence
