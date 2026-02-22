@@ -13,6 +13,8 @@ import torchaudio
 import webdataset as wds
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
+from pathlib import Path
 
 from os import path
 from torch import nn
@@ -137,6 +139,48 @@ def get_latent_filenames(
         _, files = fast_scandir(path, extensions)
         filenames.extend(files)
     return filenames
+
+def _fingerprint_files(file_list):
+    """
+    Deterministic fingerprint that changes if any file list / mtime / size changes.
+    """
+    h = hashlib.sha1()
+    for fn in file_list:
+        st = os.stat(fn)
+        h.update(fn.encode("utf-8", errors="ignore"))
+        h.update(str(st.st_mtime_ns).encode("ascii"))
+        h.update(str(st.st_size).encode("ascii"))
+    return h.hexdigest()
+
+
+class _FileLock:
+    """
+    Simple cross-process lock using O_EXCL. Works on local filesystems.
+    (If your cache dir is on NFS, behavior can vary; still often OK.)
+    """
+    def __init__(self, lock_path: Path, poll_sec=0.25):
+        self.lock_path = Path(lock_path)
+        self.poll_sec = poll_sec
+        self._fd = None
+
+    def __enter__(self):
+        while True:
+            try:
+                self._fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                os.write(self._fd, str(os.getpid()).encode("ascii"))
+                return self
+            except FileExistsError:
+                time.sleep(self.poll_sec)
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._fd is not None:
+                os.close(self._fd)
+            if self.lock_path.exists():
+                self.lock_path.unlink()
+        except Exception:
+            pass
+        return False
 
 class LocalDatasetConfig:
     def __init__(
@@ -293,6 +337,8 @@ class SampleChunkDataset(torch.utils.data.Dataset):
         keywords=None,
         force_channels="stereo",
         apply_phase_flip=False,   # default False for deterministic encoding
+        cache_dir=None,
+        cache_tag="chunk_index_v1",
         verbose=True,
     ):
         super().__init__()
@@ -318,34 +364,91 @@ class SampleChunkDataset(torch.utils.data.Dataset):
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
 
-        # Precompute chunk index mapping: global_idx -> (file_idx, chunk_idx)
-        self._index = []
-        self._file_num_chunks = [0] * len(self.filenames)
-        self._file_seconds_total = [0] * len(self.filenames)
+        # ---- cache paths ----
+        cache_root = Path(cache_dir) if cache_dir is not None else Path(self.root_paths[0]) / ".index_cache"
+        cache_root.mkdir(parents=True, exist_ok=True)
 
-        # Parallelize torchaudio.info() / probing. Deterministic order preserved by enumerate.
-        max_workers = min(32, (os.cpu_count() or 8) + 4)
+        fingerprint = hashlib.sha1(
+            (
+                    cache_tag
+                    + f"|sr={self.sr}|sample_size={self.sample_size}|force_channels={self.force_channels}|"
+                    + _fingerprint_files(self.filenames)
+            ).encode("utf-8")
+        ).hexdigest()
 
-        def _probe(i, fn):
+        cache_path = cache_root / f"{fingerprint}.json"
+        lock_path = cache_root / f"{fingerprint}.lock"
+
+        # ---- try load cache ----
+        loaded = False
+        if cache_path.exists():
             try:
-                num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)
+                with open(cache_path, "r") as f:
+                    payload = json.load(f)
+                self._file_num_chunks = payload["file_num_chunks"]
+                self._file_seconds_total = payload["file_seconds_total"]
+                loaded = True
+                if verbose:
+                    print(f"Loaded index cache: {cache_path}")
             except Exception:
-                num_chunks, seconds_total = 1, 1
-            return i, int(num_chunks), int(seconds_total)
+                loaded = False
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(_probe, i, fn) for i, fn in enumerate(self.filenames)]
+        if not loaded:
+            # Only ONE process builds; others will block until cache exists.
+            with _FileLock(lock_path):
+                # Another process may have created cache while we waited
+                if cache_path.exists():
+                    with open(cache_path, "r") as f:
+                        payload = json.load(f)
+                    self._file_num_chunks = payload["file_num_chunks"]
+                    self._file_seconds_total = payload["file_seconds_total"]
+                    loaded = True
+                    if verbose:
+                        print(f"Loaded index cache after waiting: {cache_path}")
+                else:
+                    # ---- build in parallel (your existing code) ----
+                    self._file_num_chunks = [0] * len(self.filenames)
+                    self._file_seconds_total = [0] * len(self.filenames)
 
-            it = as_completed(futures)
-            if tqdm is not None:
-                it = tqdm(it, total=len(futures), desc="Indexing audio headers", unit="file")
+                    max_workers = min(64, (os.cpu_count() or 8) * 4)
 
-            for fut in it:
-                i, num_chunks, seconds_total = fut.result()
-                self._file_num_chunks[i] = num_chunks
-                self._file_seconds_total[i] = seconds_total
+                    def _probe(i_fn):
+                        i, fn = i_fn
+                        try:
+                            num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)  # ffprobe-only
+                        except Exception:
+                            num_chunks, seconds_total = 1, 1
+                        return i, int(num_chunks), int(seconds_total)
 
-        # deterministic global index build
+                    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                        futures = [ex.submit(_probe, x) for x in enumerate(self.filenames)]
+                        it = as_completed(futures)
+                        if "tqdm" in globals() and tqdm is not None:
+                            it = tqdm(it, total=len(futures), desc="Indexing audio headers", unit="file")
+
+                        for fut in it:
+                            i, num_chunks, seconds_total = fut.result()
+                            self._file_num_chunks[i] = num_chunks
+                            self._file_seconds_total[i] = seconds_total
+
+                    # ---- save cache atomically ----
+                    tmp = cache_path.with_suffix(".json.tmp")
+                    payload = {
+                        "version": cache_tag,
+                        "sr": self.sr,
+                        "sample_size": self.sample_size,
+                        "force_channels": self.force_channels,
+                        "file_num_chunks": self._file_num_chunks,
+                        "file_seconds_total": self._file_seconds_total,
+                        "num_files": len(self.filenames),
+                    }
+                    with open(tmp, "w") as f:
+                        json.dump(payload, f)
+                    os.replace(tmp, cache_path)
+                    if verbose:
+                        print(f"Wrote index cache: {cache_path}")
+
+        self._index = []
         for fi, num_chunks in enumerate(self._file_num_chunks):
             self._index.extend((fi, ci) for ci in range(num_chunks))
 
