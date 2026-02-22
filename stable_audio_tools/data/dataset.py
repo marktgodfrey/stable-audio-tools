@@ -12,6 +12,7 @@ import torch
 import torchaudio
 import webdataset as wds
 import math
+from concurrent.futures import ThreadPoolExecutor
 
 from os import path
 from torch import nn
@@ -314,15 +315,29 @@ class SampleChunkDataset(torch.utils.data.Dataset):
 
         # Precompute chunk index mapping: global_idx -> (file_idx, chunk_idx)
         self._index = []
-        self._file_num_chunks = []
-        self._file_seconds_total = []
+        self._file_num_chunks = [0] * len(self.filenames)
+        self._file_seconds_total = [0] * len(self.filenames)
 
-        for fi, fn in enumerate(self.filenames):
-            num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)
-            self._file_num_chunks.append(num_chunks)
-            self._file_seconds_total.append(seconds_total)
-            for ci in range(num_chunks):
-                self._index.append((fi, ci))
+        # Parallelize torchaudio.info() / probing. Deterministic order preserved by enumerate.
+        max_workers = min(32, (os.cpu_count() or 8) + 4)
+
+        def _probe(i_fn):
+            i, fn = i_fn
+            try:
+                num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)
+            except Exception:
+                # Hard fallback: guarantee at least one chunk so the dataset still works
+                num_chunks, seconds_total = 1, 1
+            return i, num_chunks, seconds_total
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            for i, num_chunks, seconds_total in ex.map(_probe, enumerate(self.filenames), chunksize=64):
+                self._file_num_chunks[i] = int(num_chunks)
+                self._file_seconds_total[i] = int(seconds_total)
+
+        # Build the global index (still deterministic, and fast)
+        for fi, num_chunks in enumerate(self._file_num_chunks):
+            self._index.extend((fi, ci) for ci in range(num_chunks))
 
         if verbose:
             total_chunks = len(self._index)
