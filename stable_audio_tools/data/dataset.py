@@ -356,31 +356,53 @@ class SampleChunkDataset(torch.utils.data.Dataset):
 
     def _estimate_num_chunks_and_seconds(self, filename: str):
         """
-        Try to get duration cheaply via torchaudio.info; fallback to loading if needed.
-        Returns (num_chunks, seconds_total_ceiled).
+        FFPROBE ONLY metadata probe (fast, supports webm/mp4/etc).
+        Computes #chunks after resampling to self.sr.
         """
-        try:
-            info = torchaudio.info(filename)
-            in_sr = info.sample_rate
-            n_frames = info.num_frames
 
-            if in_sr <= 0 or n_frames <= 0:
-                raise RuntimeError("Invalid torchaudio.info metadata")
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate,duration:format=duration",
+            "-of", "json",
+            filename,
+        ]
 
-            # Estimate frames after resample
-            if in_sr != self.sr:
-                n_frames = int(round(n_frames * (self.sr / in_sr)))
+        out = subprocess.check_output(cmd)
+        meta = json.loads(out)
 
-            num_chunks = max(1, int(math.ceil(n_frames / self.sample_size)))
-            seconds_total = int(math.ceil(n_frames / self.sr))
-            return num_chunks, seconds_total
-        except Exception:
-            # Fallback: decode audio once
-            audio = self.load_file(filename)
-            n_frames = audio.shape[-1]
-            num_chunks = max(1, int(math.ceil(n_frames / self.sample_size)))
-            seconds_total = int(math.ceil(n_frames / self.sr))
-            return num_chunks, seconds_total
+        streams = meta.get("streams", [])
+        if not streams:
+            # No audio stream found
+            return 1, 1
+
+        s0 = streams[0]
+
+        # sample_rate should exist for audio streams; if not, default to target sr
+        in_sr = float(s0.get("sample_rate") or self.sr)
+
+        # Prefer stream.duration, fallback to format.duration
+        dur = s0.get("duration")
+        if dur is None:
+            dur = (meta.get("format") or {}).get("duration")
+
+        if dur is None:
+            # Can't determine duration; be safe
+            return 1, 1
+
+        duration_sec = float(dur)
+
+        # Estimate frames at input sr, then map to target sr
+        n_frames_in = max(0, int(round(duration_sec * in_sr)))
+        if in_sr != self.sr:
+            n_frames = int(round(n_frames_in * (self.sr / in_sr)))
+        else:
+            n_frames = n_frames_in
+
+        num_chunks = max(1, int(math.ceil(n_frames / self.sample_size)))
+        seconds_total = max(1, int(math.ceil(n_frames / self.sr)))
+        return num_chunks, seconds_total
 
     def load_file(self, filename):
         audio, in_sr = torchaudio.load(filename)
