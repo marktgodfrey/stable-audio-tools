@@ -189,7 +189,7 @@ class SampleDataset(torch.utils.data.Dataset):
     def load_file(self, filename):
         ext = filename.split(".")[-1]
 
-        audio, in_sr = torchaudio.load(filename, format=ext)
+        audio, in_sr = torchaudio.load(filename)
 
         if in_sr != self.sr:
             resample_tf = T.Resample(in_sr, self.sr)
