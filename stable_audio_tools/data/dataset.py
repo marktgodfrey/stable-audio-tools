@@ -12,12 +12,17 @@ import torch
 import torchaudio
 import webdataset as wds
 import math
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from os import path
 from torch import nn
 from torchaudio import transforms as T
 from typing import Optional, Callable, List
+
+try:
+    from tqdm import tqdm
+except Exception:
+    tqdm = None
 
 from .utils import Stereo, Mono, PhaseFlipper, PadCrop_Normalized_T, VolumeNorm
 
@@ -321,21 +326,26 @@ class SampleChunkDataset(torch.utils.data.Dataset):
         # Parallelize torchaudio.info() / probing. Deterministic order preserved by enumerate.
         max_workers = min(32, (os.cpu_count() or 8) + 4)
 
-        def _probe(i_fn):
-            i, fn = i_fn
+        def _probe(i, fn):
             try:
                 num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)
             except Exception:
-                # Hard fallback: guarantee at least one chunk so the dataset still works
                 num_chunks, seconds_total = 1, 1
-            return i, num_chunks, seconds_total
+            return i, int(num_chunks), int(seconds_total)
 
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            for i, num_chunks, seconds_total in ex.map(_probe, enumerate(self.filenames), chunksize=64):
-                self._file_num_chunks[i] = int(num_chunks)
-                self._file_seconds_total[i] = int(seconds_total)
+            futures = [ex.submit(_probe, i, fn) for i, fn in enumerate(self.filenames)]
 
-        # Build the global index (still deterministic, and fast)
+            it = as_completed(futures)
+            if tqdm is not None:
+                it = tqdm(it, total=len(futures), desc="Indexing audio headers", unit="file")
+
+            for fut in it:
+                i, num_chunks, seconds_total = fut.result()
+                self._file_num_chunks[i] = num_chunks
+                self._file_seconds_total[i] = seconds_total
+
+        # deterministic global index build
         for fi, num_chunks in enumerate(self._file_num_chunks):
             self._index.extend((fi, ci) for ci in range(num_chunks))
 
