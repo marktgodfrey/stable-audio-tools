@@ -99,11 +99,40 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
             md = metadata[i]
 
             latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
-            basename = md['relpath'][:-4][:240]
 
-            latent_path = self.output_path / Path(basename + ".npy") \
-                if md and 'relpath' in md \
-                else self.output_path / str(self.global_rank) / f"{latent_id}.npy"
+            #basename = md['relpath'][:-4][:240]
+
+            # latent_path = self.output_path / Path(basename + ".npy") \
+            #     if md and 'relpath' in md \
+            #     else self.output_path / str(self.global_rank) / f"{latent_id}.npy"
+
+            # metadata_path = self.output_path / Path(basename + ".json") \
+            #     if md and 'relpath' in md \
+            #     else self.output_path / str(self.global_rank) / f"{latent_id}.json"
+
+            rel = md.get("relpath", None)
+            chunk_idx = md.get("chunk_idx", None)
+
+            if rel is not None:
+                # keep subdirs, remove extension safely
+                base = str(Path(rel).with_suffix(""))[:240]
+
+                if chunk_idx is not None:
+                    latent_relpath = f"{base}_{int(chunk_idx):03d}.npy"
+                    metadata_relpath = f"{base}_{int(chunk_idx):03d}.json"
+                else:
+                    latent_relpath = f"{base}.npy"
+                    metadata_relpath = f"{base}.json"
+
+                latent_path = self.output_path / Path(latent_relpath)
+                metadata_path = self.output_path / Path(metadata_relpath)
+
+                latent_path.parent.mkdir(parents=True, exist_ok=True)
+            else:
+                latent_path = self.output_path / str(self.global_rank) / f"{latent_id}.npy"
+                metadata_path = self.output_path / str(self.global_rank) / f"{latent_id}.json"
+                latent_path.parent.mkdir(parents=True, exist_ok=True)
+
             with open(latent_path, "wb") as f:
                 np.save(f, latent)
 
@@ -120,9 +149,6 @@ class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
                     md[k] = v.cpu().numpy().tolist()
 
             # Save metadata to json file
-            metadata_path = self.output_path / Path(basename + ".json") \
-                if md and 'relpath' in md \
-                else self.output_path / str(self.global_rank) / f"{latent_id}.json"
             with open(metadata_path, "w") as f:
                 json.dump(md, f)
 

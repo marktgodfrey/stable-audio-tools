@@ -187,8 +187,6 @@ class SampleDataset(torch.utils.data.Dataset):
         print(f'Found {len(self.filenames)} files')
 
     def load_file(self, filename):
-        ext = filename.split(".")[-1]
-
         audio, in_sr = torchaudio.load(filename)
 
         if in_sr != self.sr:
@@ -273,6 +271,177 @@ class SampleDataset(torch.utils.data.Dataset):
             return (audio, info)
         except Exception as e:
             print(f'Couldn\'t load file {audio_filename}: {e}')
+            return self[random.randrange(len(self))]
+
+class SampleChunkDataset(torch.utils.data.Dataset):
+    """
+    Like SampleDataset, but returns consecutive non-overlapping chunks of size `sample_size`
+    for each audio file, covering the entire file (last chunk is zero-padded).
+    """
+
+    def __init__(
+        self,
+        configs,
+        sample_size=65536,
+        sample_rate=48000,
+        keywords=None,
+        force_channels="stereo",
+        apply_phase_flip=False,   # default False for deterministic encoding
+        verbose=True,
+    ):
+        super().__init__()
+
+        self.sample_size = int(sample_size)
+        self.sr = int(sample_rate)
+        self.force_channels = force_channels
+
+        self.augs = torch.nn.Sequential(PhaseFlipper()) if apply_phase_flip else None
+
+        self.encoding = torch.nn.Sequential(
+            Stereo() if self.force_channels == "stereo" else torch.nn.Identity(),
+            Mono() if self.force_channels == "mono" else torch.nn.Identity(),
+        )
+
+        self.root_paths = []
+        self.custom_metadata_fns = {}
+        self.filenames = []
+
+        for config in configs:
+            self.root_paths.append(config.path)
+            self.filenames.extend(get_audio_filenames(config.path, keywords))
+            if config.custom_metadata_fn is not None:
+                self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+
+        # Precompute chunk index mapping: global_idx -> (file_idx, chunk_idx)
+        self._index = []
+        self._file_num_chunks = []
+        self._file_seconds_total = []
+
+        for fi, fn in enumerate(self.filenames):
+            num_chunks, seconds_total = self._estimate_num_chunks_and_seconds(fn)
+            self._file_num_chunks.append(num_chunks)
+            self._file_seconds_total.append(seconds_total)
+            for ci in range(num_chunks):
+                self._index.append((fi, ci))
+
+        if verbose:
+            total_chunks = len(self._index)
+            print(f"Found {len(self.filenames)} files")
+            print(f"Total consecutive chunks: {total_chunks}")
+
+    def _estimate_num_chunks_and_seconds(self, filename: str):
+        """
+        Try to get duration cheaply via torchaudio.info; fallback to loading if needed.
+        Returns (num_chunks, seconds_total_ceiled).
+        """
+        try:
+            info = torchaudio.info(filename)
+            in_sr = info.sample_rate
+            n_frames = info.num_frames
+
+            if in_sr <= 0 or n_frames <= 0:
+                raise RuntimeError("Invalid torchaudio.info metadata")
+
+            # Estimate frames after resample
+            if in_sr != self.sr:
+                n_frames = int(round(n_frames * (self.sr / in_sr)))
+
+            num_chunks = max(1, int(math.ceil(n_frames / self.sample_size)))
+            seconds_total = int(math.ceil(n_frames / self.sr))
+            return num_chunks, seconds_total
+        except Exception:
+            # Fallback: decode audio once
+            audio = self.load_file(filename)
+            n_frames = audio.shape[-1]
+            num_chunks = max(1, int(math.ceil(n_frames / self.sample_size)))
+            seconds_total = int(math.ceil(n_frames / self.sr))
+            return num_chunks, seconds_total
+
+    def load_file(self, filename):
+        audio, in_sr = torchaudio.load(filename)
+
+        if in_sr != self.sr:
+            resample_tf = T.Resample(in_sr, self.sr)
+            audio = resample_tf(audio)
+
+        return audio
+
+    def __len__(self):
+        return len(self._index)
+
+    def __getitem__(self, idx):
+        file_idx, chunk_idx = self._index[idx]
+        audio_filename = self.filenames[file_idx]
+
+        try:
+            start_time = time.time()
+
+            audio = self.load_file(audio_filename)  # (C, T)
+            n_channels, n_samples = audio.shape
+
+            start = chunk_idx * self.sample_size
+            end = start + self.sample_size
+
+            # Slice + pad
+            chunk = audio[:, start:min(end, n_samples)]
+            valid = chunk.shape[-1]
+
+            if valid < self.sample_size:
+                pad_amt = self.sample_size - valid
+                chunk = torch.nn.functional.pad(chunk, (0, pad_amt), mode="constant", value=0.0)
+
+            # padding mask at audio-sample resolution (like SampleDataset)
+            padding_mask = torch.zeros([self.sample_size], dtype=torch.float32)
+            padding_mask[:valid] = 1.0
+
+            # Silence check on the chunk (not whole file)
+            if is_silence(chunk):
+                return self[random.randrange(len(self))]
+
+            if self.augs is not None:
+                chunk = self.augs(chunk)
+
+            chunk = chunk.clamp(-1, 1)
+
+            if self.encoding is not None:
+                chunk = self.encoding(chunk)
+
+            seconds_start = start / float(self.sr)
+            seconds_total = self._file_seconds_total[file_idx]
+            t_start = seconds_start / float(max(seconds_total, 1))
+            t_end = min(1.0, (seconds_start + (self.sample_size / float(self.sr))) / float(max(seconds_total, 1)))
+
+            info = {}
+            info["path"] = audio_filename
+
+            for root_path in self.root_paths:
+                if root_path in audio_filename:
+                    info["relpath"] = path.relpath(audio_filename, root_path)
+
+            info["timestamps"] = (t_start, t_end)
+            info["seconds_start"] = seconds_start
+            info["seconds_total"] = seconds_total
+            info["padding_mask"] = padding_mask
+            info["sample_rate"] = self.sr
+
+            # chunk bookkeeping
+            info["chunk_idx"] = int(chunk_idx)
+            info["num_chunks"] = int(self._file_num_chunks[file_idx])
+
+            end_time = time.time()
+            info["load_time"] = end_time - start_time
+
+            # Optional: attach custom metadata (same pattern as SampleDataset)
+            for custom_md_path, custom_md_fn in self.custom_metadata_fns.items():
+                if custom_md_path in audio_filename:
+                    custom_md = custom_md_fn(audio_filename)
+                    if isinstance(custom_md, dict):
+                        info.update(custom_md)
+
+            return chunk, info
+
+        except Exception:
+            # If anything fails, try another random sample like SampleDataset does
             return self[random.randrange(len(self))]
 
 class PreEncodedDataset(torch.utils.data.Dataset):
@@ -864,6 +1033,54 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
         return torch.utils.data.DataLoader(train_set, batch_size, shuffle=shuffle,
                                 num_workers=num_workers, persistent_workers=True, pin_memory=True, drop_last=dataset_config.get("drop_last", True), collate_fn=collation_fn)
+
+    if dataset_type == "audio_dir_chunks":
+
+        audio_dir_configs = dataset_config.get("datasets", None)
+
+        assert audio_dir_configs is not None, "Directory configuration must be specified in datasets[\"dataset\"]"
+
+        configs = []
+
+        for audio_dir_config in audio_dir_configs:
+            audio_dir_path = audio_dir_config.get("path", None)
+            assert audio_dir_path is not None, "Path must be set for local audio directory configuration"
+
+            custom_metadata_fn = None
+            custom_metadata_module_path = audio_dir_config.get("custom_metadata_module", None)
+
+            if custom_metadata_module_path is not None:
+                spec = importlib.util.spec_from_file_location("metadata_module", custom_metadata_module_path)
+                metadata_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(metadata_module)
+
+                custom_metadata_fn = metadata_module.get_custom_metadata
+
+            configs.append(
+                LocalDatasetConfig(
+                    id=audio_dir_config["id"],
+                    path=audio_dir_path,
+                    custom_metadata_fn=custom_metadata_fn
+                )
+            )
+
+        train_set = SampleChunkDataset(
+            configs,
+            sample_rate=sample_rate,
+            sample_size=sample_size,
+            force_channels=force_channels,
+            apply_phase_flip=False,
+        )
+        return torch.utils.data.DataLoader(
+            train_set,
+            batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            drop_last=False,
+            collate_fn=collation_fn,
+        )
 
     elif dataset_type == "pre_encoded":
 
