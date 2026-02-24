@@ -594,6 +594,164 @@ class SampleChunkDataset(torch.utils.data.Dataset):
             # If anything fails, try another random sample like SampleDataset does
             return self[random.randrange(len(self))]
 
+class ConsecutiveChunkFileIteratorDataset(torch.utils.data.IterableDataset):
+    """
+    IterableDataset that assigns whole FILES to each (rank, worker),
+    decodes each file ONCE, then yields consecutive non-overlapping chunks.
+
+    Good for pre-encoding / full coverage over datasets.
+    """
+
+    def __init__(
+        self,
+        configs,
+        sample_size=65536,
+        sample_rate=48000,
+        keywords=None,
+        force_channels="stereo",
+        apply_phase_flip=False,      # default False for deterministic encoding
+        skip_silence=False,          # if True, skip silent chunks (keeps iter moving)
+        verbose=True,
+    ):
+        super().__init__()
+
+        self.sample_size = int(sample_size)
+        self.sr = int(sample_rate)
+        self.force_channels = force_channels
+        self.skip_silence = bool(skip_silence)
+        self.verbose = verbose
+
+        self.augs = torch.nn.Sequential(PhaseFlipper()) if apply_phase_flip else None
+        self.encoding = torch.nn.Sequential(
+            Stereo() if self.force_channels == "stereo" else torch.nn.Identity(),
+            Mono() if self.force_channels == "mono" else torch.nn.Identity(),
+        )
+
+        self.root_paths = []
+        self.custom_metadata_fns = {}
+        self.filenames = []
+
+        for config in configs:
+            self.root_paths.append(config.path)
+            self.filenames.extend(get_audio_filenames(config.path, keywords))
+            if config.custom_metadata_fn is not None:
+                self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+
+        # deterministic file order
+        self.filenames = sorted(self.filenames)
+
+        if verbose:
+            print(f"Found {len(self.filenames)} files")
+
+    def _ddp_rank_world(self):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return torch.distributed.get_rank(), torch.distributed.get_world_size()
+        return 0, 1
+
+    def _shard_files(self, files):
+        """
+        Deterministically shard by (ddp_rank, worker_id).
+        """
+        rank, world = self._ddp_rank_world()
+        w = torch.utils.data.get_worker_info()
+        if w is None:
+            worker_id, num_workers = 0, 1
+        else:
+            worker_id, num_workers = w.id, w.num_workers
+
+        # combine into a single "global worker" id
+        gid = rank * num_workers + worker_id
+        gcount = world * num_workers
+
+        # round-robin assignment keeps ordering stable and spreads load
+        return files[gid::gcount], (rank, world, worker_id, num_workers)
+
+    def _load_resample(self, filename):
+        audio, in_sr = torchaudio.load(filename)  # (C, T)
+        if in_sr != self.sr:
+            audio = T.Resample(in_sr, self.sr)(audio)
+        return audio  # (C, T) at self.sr
+
+    def _relpath(self, audio_filename):
+        for root_path in self.root_paths:
+            if root_path in audio_filename:
+                return path.relpath(audio_filename, root_path)
+        return path.basename(audio_filename)
+
+    def __iter__(self):
+        files, shard_info = self._shard_files(self.filenames)
+        rank, world, worker_id, num_workers = shard_info
+
+        if self.verbose and worker_id == 0:
+            # print once per rank
+            print(f"[rank {rank}/{world}] workers={num_workers} -> files for this worker={len(files)}")
+
+        for audio_filename in files:
+            try:
+                start_t = time.time()
+
+                audio = self._load_resample(audio_filename)  # (C, T) at target sr
+                audio = audio.clamp(-1, 1)
+
+                n_samples = audio.shape[-1]
+                num_chunks = max(1, int(math.ceil(n_samples / self.sample_size)))
+                seconds_total = max(1, int(math.ceil(n_samples / self.sr)))
+
+                rel = self._relpath(audio_filename)
+
+                # file-level custom metadata
+                base_info = {"path": audio_filename, "relpath": rel}
+                for custom_md_path, custom_md_fn in self.custom_metadata_fns.items():
+                    if custom_md_path in audio_filename:
+                        custom_md = custom_md_fn(audio_filename)
+                        if isinstance(custom_md, dict):
+                            base_info.update(custom_md)
+
+                for chunk_idx in range(num_chunks):
+                    start = chunk_idx * self.sample_size
+                    end = start + self.sample_size
+
+                    chunk = audio[:, start:min(end, n_samples)]
+                    valid = chunk.shape[-1]
+                    if valid < self.sample_size:
+                        chunk = torch.nn.functional.pad(chunk, (0, self.sample_size - valid), mode="constant", value=0.0)
+
+                    if self.skip_silence and is_silence(chunk):
+                        continue
+
+                    if self.augs is not None:
+                        chunk = self.augs(chunk)
+
+                    if self.encoding is not None:
+                        chunk = self.encoding(chunk)
+
+                    padding_mask = torch.zeros([self.sample_size], dtype=torch.float32)
+                    padding_mask[:valid] = 1.0
+
+                    seconds_start = start / float(self.sr)
+                    t_start = seconds_start / float(seconds_total)
+                    t_end = min(1.0, (seconds_start + (self.sample_size / float(self.sr))) / float(seconds_total))
+
+                    info = dict(base_info)
+                    info.update(
+                        {
+                            "chunk_idx": int(chunk_idx),
+                            "num_chunks": int(num_chunks),
+                            "timestamps": (t_start, t_end),
+                            "seconds_start": float(seconds_start),
+                            "seconds_total": int(seconds_total),
+                            "padding_mask": padding_mask,
+                            "sample_rate": int(self.sr),
+                            "load_time": time.time() - start_t,
+                        }
+                    )
+
+                    yield chunk, info
+
+            except Exception:
+                # keep iteration moving; optionally log if you want
+                continue
+
 class PreEncodedDataset(torch.utils.data.Dataset):
     def __init__(
         self, 
@@ -1214,22 +1372,25 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
                 )
             )
 
-        train_set = SampleChunkDataset(
-            configs,
+        ds = ConsecutiveChunkFileIteratorDataset(
+            configs=configs,
             sample_rate=sample_rate,
             sample_size=sample_size,
-            force_channels=force_channels,
+            force_channels="stereo",
             apply_phase_flip=False,
+            skip_silence=False,
+            verbose=True,
         )
+
         return torch.utils.data.DataLoader(
-            train_set,
+            ds,
             batch_size,
             shuffle=False,
             num_workers=num_workers,
             persistent_workers=True,
             pin_memory=True,
             drop_last=False,
-            collate_fn=collation_fn,
+            collate_fn=collation_fn
         )
 
     elif dataset_type == "pre_encoded":
