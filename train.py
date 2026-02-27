@@ -26,6 +26,10 @@ def main():
     args = get_all_args()
     seed = args.seed
 
+    torch.set_float32_matmul_precision("high")  # or "medium"
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     # Set a different seed for each process if using SLURM
     if os.environ.get("SLURM_PROCID") is not None:
         seed += int(os.environ.get("SLURM_PROCID"))
