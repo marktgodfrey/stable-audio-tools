@@ -91,7 +91,8 @@ def main():
 
     if args.logger == 'wandb':
         logger = pl.loggers.WandbLogger(project=args.name)
-        logger.watch(training_wrapper)
+        # logger.watch(training_wrapper)
+        logger.watch(training_wrapper, log="gradients", log_freq=10000, log_graph=False)
     
         if args.save_dir and isinstance(logger.experiment.id, str):
             checkpoint_dir = os.path.join(args.save_dir, logger.experiment.project, logger.experiment.id, "checkpoints") 
