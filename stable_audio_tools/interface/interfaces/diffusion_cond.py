@@ -226,67 +226,21 @@ def generate_cond(
 
         audio = generate_diffusion_cond_inpaint(**generate_args)
 
-    # Filenaming convention
-    prompt_condensed = condense_prompt(prompt) 
-    if file_naming=="verbose":
-        cfg_filename = "cfg%s" % (cfg_scale)
-        seed_filename = seed
-        if negative_prompt:
-            prompt_condensed += ".neg-%s" % condense_prompt(negative_prompt)
-        basename = "%s.%s.%s" % (prompt_condensed, cfg_filename, seed_filename)
-    elif file_naming=="prompt":
-        basename = prompt_condensed
-    else:
-        # simple e.g. "output.wav"
-        basename = "output" 
-
-    if file_format:
-        filename_extension = file_format.split(" ")[0].lower()
-    else: 
-        filename_extension = "wav"
-    output_filename = "%s.%s" % (basename, filename_extension)
-    output_wav = "%s.wav" % basename
-
     # Cut the extra silence off the end, if the user requested a smaller seconds_total
     if cut_to_seconds_total:
         audio = audio[:,:,:seconds_total*sample_rate]
 
-    # Encode the audio to WAV format
     audio = rearrange(audio, "b d n -> d (b n)")
-    audio = audio.to(torch.float32).div(torch.max(torch.abs(audio))).clamp(-1, 1).cpu()
+    audio = audio.to(torch.float32)
+    audio = audio / torch.clamp(torch.max(torch.abs(audio)), min=1e-8)
+    audio = audio.clamp(-1, 1).cpu()
 
-    # save as wav file
-    torchaudio.save(output_wav, audio, sample_rate)
+    audio_np = audio.transpose(0, 1).numpy()  # (samples, channels)
 
-    # If file_format is other than wav, convert to other file format
-    cmd = ""
-    if file_format == "m4a aac_he_v2 32k":
-        # note: need to compile ffmpeg with --enable-libfdk_aac
-        cmd = f"ffmpeg -i \"{output_wav}\" -c:a libfdk_aac -profile:a aac_he_v2 -b:a 32k -y \"{output_filename}\""
-    elif file_format == "m4a aac_he_v2 64k":
-        cmd = f"ffmpeg -i \"{output_wav}\" -c:a libfdk_aac -profile:a aac_he_v2 -b:a 64k -y \"{output_filename}\""
-    elif file_format == "flac":
-        cmd = f"ffmpeg -i \"{output_wav}\" -y \"{output_filename}\""
-    elif file_format == "mp3 320k":
-        cmd = f"ffmpeg -i \"{output_wav}\" -b:a 320k -y \"{output_filename}\""
-    elif file_format == "mp3 128k":
-        cmd = f"ffmpeg -i \"{output_wav}\" -b:a 128k -y \"{output_filename}\""
-    elif file_format == "mp3 v0":
-        cmd = f"ffmpeg -i \"{output_wav}\" -q:a 0 -y \"{output_filename}\""
-    else: # wav
-        pass
-    if cmd:
-        cmd += " -loglevel error" # make output less verbose in the cmd window
-        subprocess.run(cmd, shell=True, check=True)
-    
     # Let's look at a nice spectrogram too
     audio_spectrogram = audio_spectrogram_image(audio, sample_rate=sample_rate)
 
-    # Asynchronously delete the files after returning the output file, so as to prevent clutter in the directory
-    if file_naming in ["verbose", "prompt"]:
-        delete_files_async([output_wav, output_filename], 30)
-
-    return (output_filename, [audio_spectrogram, *preview_images])
+    return ((sample_rate, audio_np), [audio_spectrogram, *preview_images])
 
 #  Asynchronously delete the given list of filenames after delay seconds. Sets up thread that sleeps for delay then deletes. 
 def delete_files_async(filenames, delay):
