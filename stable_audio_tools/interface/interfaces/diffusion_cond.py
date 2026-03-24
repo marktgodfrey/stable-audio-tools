@@ -342,14 +342,14 @@ def create_sampling_ui(model_config):
 
             # Default generation tab
             with gr.Accordion("Init audio", open=False):
-                init_audio_input = gr.Audio(label="Init audio", waveform_options=gr.WaveformOptions(show_recording_waveform=False))
+                init_audio_input = gr.Audio(label="Init audio")
                 min_noise_level = 0.01 if (is_rf or is_rf_denoiser) else 0.1
                 max_noise_level = 1.0 if (is_rf or is_rf_denoiser) else 100.0
 
                 init_noise_level_slider = gr.Slider(minimum=min_noise_level, maximum=max_noise_level, step=0.01, value=0.1, label="Init noise level")
 
             with gr.Accordion("Inpainting", open=False, visible=has_inpainting):
-                inpaint_audio_input = gr.Audio(label="Inpaint audio", waveform_options=gr.WaveformOptions(show_recording_waveform=False))
+                inpaint_audio_input = gr.Audio(label="Inpaint audio")
                 mask_maskstart_slider = gr.Slider(minimum=0.0, maximum=sample_size//sample_rate, step=0.1, value=10, label="Mask Start (sec)")
                 mask_maskend_slider = gr.Slider(minimum=0.0, maximum=sample_size//sample_rate, step=0.1, value=sample_size//sample_rate, label="Mask End (sec)")
 
@@ -380,8 +380,7 @@ def create_sampling_ui(model_config):
             ]
 
         with gr.Column():
-            audio_output = gr.Audio(label="Output audio", interactive=False, 
-                    waveform_options=gr.WaveformOptions(show_recording_waveform=False))
+            audio_output = gr.Audio(label="Output audio", interactive=False)
             audio_spectrogram_output = gr.Gallery(label="Output spectrogram", show_label=False)
             send_to_init_button = gr.Button("Send to init audio", scale=1)
             send_to_init_button.click(fn=lambda audio: audio, inputs=[audio_output], outputs=[init_audio_input])
